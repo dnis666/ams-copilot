@@ -6,6 +6,7 @@ import httpx
 import numpy as np
 
 from ams_copilot.config import Settings
+from ams_copilot.guardrails import mask_pii
 from ams_copilot.llm.heuristics import normalize
 
 STOPWORDS = {
@@ -98,15 +99,26 @@ class OpenAICompatibleEmbedder:
         self._http = httpx.Client(base_url=base_url.rstrip("/"), headers=headers, timeout=60, transport=transport)
 
     def embed(self, texts: list[str]) -> np.ndarray:
+        if not texts:
+            return np.empty((0, self.dimensions), dtype=np.float32)
         response = self._http.post(
-            "/embeddings", json={"model": self.model, "input": texts, "dimensions": self.dimensions}
+            "/embeddings",
+            json={"model": self.model, "input": [mask_pii(text)[0] for text in texts], "dimensions": self.dimensions},
         )
         response.raise_for_status()
         rows = sorted(response.json()["data"], key=lambda item: item["index"])
         matrix = np.array([row["embedding"] for row in rows], dtype=np.float32)
+        if [row["index"] for row in rows] != list(range(len(texts))):
+            raise ValueError("índices de embeddings inválidos")
+        if matrix.shape != (len(texts), self.dimensions) or not np.isfinite(matrix).all():
+            raise ValueError("dimensões ou valores de embeddings inválidos")
         norms = np.linalg.norm(matrix, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
+        if (norms == 0).any():
+            raise ValueError("embedding vazio")
         return matrix / norms
+
+    def close(self) -> None:
+        self._http.close()
 
 
 def build_embedder(settings: Settings) -> Embedder:

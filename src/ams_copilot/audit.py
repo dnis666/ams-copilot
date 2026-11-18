@@ -79,13 +79,22 @@ class AuditStore:
             )
             self._connection.commit()
 
-    def events(self, ticket_id: str) -> list[dict[str, Any]]:
+    def events(self, ticket_id: str, tenant: str | None = None) -> list[dict[str, Any]]:
+        query = "SELECT occurred_at, tenant, actor, event, payload FROM audit_events WHERE ticket_id = ?"
+        params = [ticket_id]
+        if tenant is not None:
+            query += " AND tenant = ?"
+            params.append(tenant)
         with self._lock:
             rows = self._connection.execute(
-                "SELECT occurred_at, tenant, actor, event, payload FROM audit_events WHERE ticket_id = ? ORDER BY id",
-                (ticket_id,),
+                query + " ORDER BY id",
+                params,
             ).fetchall()
         return [{**dict(row), "payload": json.loads(row["payload"])} for row in rows]
+
+    def close(self) -> None:
+        with self._lock:
+            self._connection.close()
 
     def tokens_since(self, tenant: str, since: datetime) -> int:
         with self._lock:
@@ -101,6 +110,8 @@ class AuditStore:
         return self.tokens_since(tenant, start)
 
     def usage_report(self, tenant: str, days: int = 30) -> dict[str, Any]:
+        if not 1 <= days <= 366:
+            raise ValueError("days deve estar entre 1 e 366")
         since = (datetime.now(UTC) - timedelta(days=days)).isoformat()
         with self._lock:
             totals = self._connection.execute(

@@ -1,5 +1,7 @@
 import time
-from dataclasses import dataclass
+from collections.abc import Callable
+from contextlib import ExitStack
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from ams_copilot.agents import (
@@ -24,6 +26,7 @@ from ams_copilot.rag import (
     build_embedder,
     load_documents,
 )
+from ams_copilot.rag.history import HistoricalTicket
 from ams_copilot.tools import ToolRegistry
 
 
@@ -35,26 +38,44 @@ class Container:
     history: TicketHistory
     audit: AuditStore
 
+    def close(self) -> None:
+        for resource in (self.llm, self.knowledge_base.embedder, self.knowledge_base.store, self.audit):
+            close = getattr(resource, "close", None)
+            if close is not None:
+                close()
+
     @property
     def pipeline(self) -> "TriagePipeline":
         return TriagePipeline(self)
 
 
 def build_container(settings: Settings, llm: LLMClient | None = None, audit: AuditStore | None = None) -> Container:
-    embedder = build_embedder(settings)
-    store: VectorStore = (
-        PgVectorStore(settings.database_url, embedder.dimensions) if settings.database_url else InMemoryVectorStore()
-    )
-    knowledge_base = KnowledgeBase(store, embedder)
-    if store.count() == 0 and settings.knowledge_base_dir.exists():
-        knowledge_base.index(load_documents(settings.knowledge_base_dir))
-    return Container(
-        settings=settings,
-        llm=llm or build_llm(settings),
-        knowledge_base=knowledge_base,
-        history=TicketHistory.from_jsonl(settings.tickets_history_path, embedder),
-        audit=audit or AuditStore(settings.audit_db_path),
-    )
+    with ExitStack() as resources:
+
+        def own(resource):
+            close = getattr(resource, "close", None)
+            if close is not None:
+                resources.callback(close)
+            return resource
+
+        embedder = own(build_embedder(settings))
+        store: VectorStore = own(
+            PgVectorStore(settings.database_url, embedder.dimensions)
+            if settings.database_url
+            else InMemoryVectorStore()
+        )
+        knowledge_base = KnowledgeBase(store, embedder)
+        if store.count() == 0 and settings.knowledge_base_dir.exists():
+            knowledge_base.index(load_documents(settings.knowledge_base_dir))
+        result = Container(
+            settings=settings,
+            llm=llm if llm is not None else own(build_llm(settings)),
+            knowledge_base=knowledge_base,
+            history=TicketHistory.from_jsonl(settings.tickets_history_path, embedder),
+            audit=audit if audit is not None else own(AuditStore(settings.audit_db_path)),
+        )
+        resources.pop_all()
+        return result
 
 
 class TriagePipeline:
@@ -63,11 +84,21 @@ class TriagePipeline:
         self.settings = container.settings
 
     def _recorder(self, ticket: Ticket) -> RunRecorder:
-        return RunRecorder(self.container.audit, ticket.tenant, ticket.id, self.settings.price_table)
+        return RunRecorder(
+            self.container.audit,
+            ticket.tenant,
+            ticket.id,
+            self.settings.price_table,
+            daily_budget=self.settings.daily_token_budget_per_tenant,
+        )
 
-    def _tools(self, tenant: str, retrieved: dict[str, Citation]) -> ToolRegistry:
+    def _tools(
+        self,
+        retrieved: dict[str, Citation],
+        evidence: dict[str, Any],
+        similar: Callable[[str], list[tuple[HistoricalTicket, float]]],
+    ) -> ToolRegistry:
         knowledge_base = self.container.knowledge_base
-        history = self.container.history
         settings = self.settings
 
         def search_knowledge_base(query: str, module: str | None = None) -> dict[str, Any]:
@@ -75,6 +106,7 @@ class TriagePipeline:
                 query, top_k=settings.retrieval_top_k, module=module, min_score=settings.retrieval_min_score
             )
             for hit in hits:
+                evidence[hit.chunk.doc_id] = hit.as_dict()
                 retrieved.setdefault(
                     hit.chunk.doc_id,
                     Citation(doc_id=hit.chunk.doc_id, title=hit.chunk.title, score=round(hit.score, 4)),
@@ -103,7 +135,7 @@ class TriagePipeline:
                         "resolution": ticket.resolution,
                         "score": round(score, 4),
                     }
-                    for ticket, score in history.similar(query, tenant)
+                    for ticket, score in similar(query)
                 ]
             }
 
@@ -113,8 +145,14 @@ class TriagePipeline:
             "Busca artigos da base de conhecimento de AMS SAP por similaridade semântica.",
             {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
-                    "query": {"type": "string", "description": "Sintoma ou erro descrito no chamado"},
+                    "query": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 20000,
+                        "description": "Sintoma ou erro descrito no chamado",
+                    },
                     "module": {"type": "string", "description": "Módulo SAP para priorizar na busca"},
                 },
                 "required": ["query"],
@@ -126,7 +164,15 @@ class TriagePipeline:
             "Busca chamados já resolvidos do mesmo cliente com sintomas parecidos.",
             {
                 "type": "object",
-                "properties": {"query": {"type": "string", "description": "Sintoma ou erro descrito no chamado"}},
+                "additionalProperties": False,
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 20000,
+                        "description": "Sintoma ou erro descrito no chamado",
+                    }
+                },
                 "required": ["query"],
             },
             find_similar_tickets,
@@ -151,7 +197,20 @@ class TriagePipeline:
         triage = TriageAgent(llm, recorder, max_steps=2).run({"ticket": safe_ticket})
 
         retrieved: dict[str, Citation] = {}
-        tools = self._tools(ticket.tenant, retrieved)
+        evidence: dict[str, Any] = {}
+        history_cache: dict[str, list[tuple[HistoricalTicket, float]]] = {}
+
+        def similar(query: str) -> list[tuple[HistoricalTicket, float]]:
+            key = " ".join(mask_pii(query)[0].split())
+            if key not in history_cache:
+                try:
+                    history_cache[key] = self.container.history.similar(key, ticket.tenant)
+                except Exception:
+                    recorder.event("retrieval", "history_unavailable", {})
+                    history_cache[key] = []
+            return history_cache[key]
+
+        tools = self._tools(retrieved, evidence, similar)
         diagnosis: Diagnosis | None
         try:
             diagnosis = DiagnosisAgent(llm, recorder, tools, settings.max_agent_steps).run(
@@ -170,13 +229,15 @@ class TriagePipeline:
                     "ticket": safe_ticket,
                     "diagnosis": diagnosis.model_dump(mode="json") if diagnosis else None,
                     "sources": sorted(retrieved),
+                    "evidence": list(evidence.values()),
+                    "historical_evidence": [asdict(item) for matches in history_cache.values() for item, _ in matches],
                 }
             )
         except AgentError:
             review = Review(approved=False, issues=["Revisor não concluiu a análise."])
 
         route, reasons = decide_route(triage, diagnosis, review, settings.confidence_threshold, ungrounded)
-        similar = [item.ticket_id for item, _ in self.container.history.similar(ticket.text, ticket.tenant)]
+        similar_ids = [item.ticket_id for item, _ in similar(f"{title} {description}")]
         cited = [retrieved[doc] for doc in (diagnosis.citations if diagnosis else []) if doc in retrieved]
         outcome = TriageOutcome(
             ticket_id=ticket.id,
@@ -185,7 +246,7 @@ class TriagePipeline:
             diagnosis=diagnosis,
             review=review,
             citations=cited,
-            similar_tickets=similar,
+            similar_tickets=similar_ids,
             route=route,
             reasons=reasons,
             usage=recorder.usage,
@@ -210,6 +271,7 @@ class TriagePipeline:
         root_cause: str | None = None,
         transactions: list[str] | None = None,
     ) -> KbArticle:
+        enforce_budget(self.container.audit, ticket.tenant, self.settings.daily_token_budget_per_tenant)
         recorder = self._recorder(ticket)
         title, _ = mask_pii(ticket.title)
         description, _ = mask_pii(ticket.description)

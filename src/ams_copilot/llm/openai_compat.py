@@ -14,8 +14,10 @@ class OpenAICompatibleClient:
         model: str,
         timeout: float = 60.0,
         transport: httpx.BaseTransport | None = None,
+        max_output_tokens: int = 2048,
     ) -> None:
         self.model = model
+        self.max_output_tokens = max_output_tokens
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self._http = httpx.Client(base_url=base_url.rstrip("/"), headers=headers, timeout=timeout, transport=transport)
 
@@ -29,6 +31,7 @@ class OpenAICompatibleClient:
         payload: dict[str, Any] = {
             "model": self.model,
             "temperature": 0,
+            "max_tokens": self.max_output_tokens,
             "messages": [self._encode(message) for message in messages],
             "user": task,
         }
@@ -68,6 +71,9 @@ class OpenAICompatibleClient:
             ),
             model=body.get("model", self.model),
         )
+
+    def close(self) -> None:
+        self._http.close()
 
     @staticmethod
     def _encode(message: Message) -> dict[str, Any]:

@@ -19,7 +19,8 @@ dependencies = [
   "numpy>=1.26",
   "psycopg[binary]>=3.2",
   "pgvector>=0.3",
-  "mcp>=2.0",
+  "mcp>=2.0,<3",
+  "jsonschema>=4.20",
 ]
 
 [project.optional-dependencies]

@@ -24,3 +24,35 @@ def test_mcp_server_exposes_tools(container: Container, monkeypatch):
         "ticket_audit_trail",
     }
     assert "KB-002" in result
+
+
+def test_mcp_stdio_protocol(tmp_path):
+    import os
+    import sys
+
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    async def scenario():
+        params = StdioServerParameters(
+            command=sys.executable,
+            args=["-m", "ams_copilot.mcp_server"],
+            env={
+                **os.environ,
+                "AMS_LLM_PROVIDER": "scripted",
+                "AMS_EMBEDDING_PROVIDER": "hashing",
+                "AMS_DATABASE_URL": "",
+                "AMS_AUDIT_DB_PATH": str(tmp_path / "mcp.db"),
+            },
+        )
+        async with stdio_client(params) as (reader, writer), ClientSession(reader, writer) as session:
+            await session.initialize()
+            listed = await session.list_tools()
+            assert len(listed.tools) == 5
+            result = await session.call_tool("search_knowledge_base", {"query": "IDoc status 51", "top_k": 1})
+            assert not result.is_error
+            assert "KB-001" in str(result)
+            invalid = await session.call_tool("search_knowledge_base", {"query": "IDoc", "top_k": 0})
+            assert invalid.is_error
+
+    asyncio.run(scenario())

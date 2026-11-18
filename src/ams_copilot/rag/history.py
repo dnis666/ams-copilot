@@ -93,7 +93,7 @@ class TicketHistory:
                     ticket_ids=[self.tickets[index].ticket_id for index in members],
                     dominant_root_cause=cause,
                     suggestion=(
-                        f"{len(members)} chamados com a mesma causa raiz: abrir registro de problema "
+                        f"{len(members)} chamados com sintomas semelhantes; causa dominante em {frequency}: abrir registro de problema "
                         "e tratar a correção definitiva em vez de resolver caso a caso."
                     ),
                     extra={"root_cause_share": round(frequency / len(members), 2)},

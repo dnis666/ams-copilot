@@ -97,6 +97,12 @@ Resposta resumida de uma triagem:
 }
 ```
 
+A API inicia em `127.0.0.1` pelo CLI. Sem `AMS_TENANT_API_KEYS`, opera em modo local confiável, sem autenticação. Para acesso compartilhado, configure `AMS_TENANT_API_KEYS` como um objeto JSON que mapeia cada cliente a uma chave secreta única de pelo menos 32 caracteres e envie `Authorization: Bearer <chave>` em todas as rotas `/v1`. O cliente autenticado só pode consultar seu consumo, recorrências e auditoria, ou processar seus próprios chamados. `/health` permanece público. A base de conhecimento é compartilhada entre clientes e deve conter apenas conteúdo comum.
+
+Use TLS e limites de requisições/conexões e tamanho do corpo no proxy de entrada. Títulos aceitam até 500 caracteres, descrições e buscas até 20 mil, buscas retornam de 1 a 20 documentos e relatórios cobrem de 1 a 366 dias. Falha do provedor na triagem ou documentação retorna HTTP 502; falhas no diagnóstico ou revisão encaminham para análise humana. Conexões HTTP usam timeout de 60 segundos, sem repetição automática de chamadas cobradas. `AMS_LLM_MAX_OUTPUT_TOKENS` limita cada resposta do provedor a 2048 tokens por padrão (parâmetro `max_tokens` da API compatível).
+
+O mascaramento por padrões cobre CPF, CNPJ, e-mail e telefone em entradas de agentes, resultados de ferramentas, payloads de auditoria e textos enviados ao provedor de embeddings. Não é uma solução geral de anonimização: identificadores de cliente/chamado são preservados na auditoria. Instruções de conteúdo recuperado não têm autoridade sobre os agentes; essa proteção por prompt não garante imunidade a injeção. O modo offline usa heurísticas e não valida semanticamente as recomendações.
+
 ## Servidor MCP
 
 ```json
@@ -111,7 +117,7 @@ Resposta resumida de uma triagem:
 }
 ```
 
-Ferramentas expostas: `search_knowledge_base`, `triage_ticket`, `ticket_recurrence`, `tenant_usage` e `ticket_audit_trail`.
+Ferramentas expostas: `search_knowledge_base`, `triage_ticket`, `ticket_recurrence`, `tenant_usage` e `ticket_audit_trail`. O transporte é stdio e o processo herda a confiança do usuário local. Configure `AMS_MCP_TENANT` para restringir o processo a um cliente; sem essa variável, ele mantém acesso administrativo aos clientes. As chaves HTTP não autenticam clientes MCP.
 
 ## Avaliação
 
@@ -124,9 +130,11 @@ Resultado no modo offline:
 | Acurácia de módulo | 0.95 |
 | Acurácia de prioridade | 1.00 |
 | Hit rate da busca (top 4) | 1.00 |
-| Precisão de citação | 1.00 |
+| Precisão de citação | 0.95 |
 | Sugestão automática (restante vai para humano) | 0.75 |
-| Tokens por chamado | ~2.2 mil |
+| Tokens por chamado | ~3 mil |
+
+A precisão de citação conta cada citação individual contra o documento esperado, incluindo citações extras ou presentes em casos sem fonte esperada. O revisor recebe o conteúdo recuperado, além dos IDs.
 
 O caso que falha (uma dúvida sobre consulta de períodos de materiais) é mantido de propósito: o relatório lista cada erro com o esperado e o obtido, que é o que orienta a próxima melhoria. Ao trocar para um modelo real, o mesmo dataset mede o ganho de qualidade contra o aumento de custo por chamado.
 
@@ -135,7 +143,7 @@ O caso que falha (uma dúvida sobre consulta de períodos de materiais) é manti
 - **Citações verificáveis**: o pipeline guarda os documentos que a busca devolveu e descarta qualquer citação fora desse conjunto antes da revisão. Diagnóstico sem fonte nunca sai como sugestão automática.
 - **Humano no circuito por política, não por acaso**: P1, baixa confiança, revisor reprovando ou transação bloqueada mandam o chamado para revisão humana, com os motivos explícitos na resposta.
 - **Dado pessoal não sai do perímetro**: o texto é mascarado antes de chegar a qualquer agente, e a auditoria registra só a contagem do que foi mascarado.
-- **Custo como requisito**: cada chamada ao modelo grava tokens e custo por cliente, agente e modelo, e o orçamento diário por cliente é verificado antes de começar a triagem (HTTP 429 quando esgota).
+- **Custo como requisito**: cada chamada ao modelo grava tokens e custo por cliente, agente e modelo, e o orçamento diário por cliente é verificado antes de cada chamada ao modelo, incluindo documentação (HTTP 429 quando esgota). O consumo da chamada em andamento pode exceder o saldo; chamadas concorrentes ainda não fazem reserva atômica de tokens. Embeddings não entram nesse orçamento.
 - **Provedor intercambiável**: o mesmo código fala com OpenAI, Ollama, vLLM ou qualquer provedor compatível pela API de Chat Completions.
 
 ## Próximos passos

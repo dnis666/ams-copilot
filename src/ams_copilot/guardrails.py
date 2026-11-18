@@ -1,5 +1,6 @@
 import re
 from collections import Counter
+from typing import Any
 
 from ams_copilot.audit import AuditStore
 from ams_copilot.models import Diagnosis, Priority, Review, TriageDecision
@@ -27,6 +28,16 @@ def mask_pii(text: str) -> tuple[str, dict[str, int]]:
     return text, dict(findings)
 
 
+def sanitize_data(value: Any) -> Any:
+    if isinstance(value, str):
+        return mask_pii(value)[0]
+    if isinstance(value, dict):
+        return {key: sanitize_data(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [sanitize_data(item) for item in value]
+    return value
+
+
 def enforce_budget(audit: AuditStore, tenant: str, daily_budget: int) -> int:
     used = audit.tokens_today(tenant)
     if used >= daily_budget:
@@ -41,7 +52,7 @@ def ground_citations(diagnosis: Diagnosis, retrieved_doc_ids: set[str]) -> list[
 
 
 def blocked_transactions(diagnosis: Diagnosis) -> list[str]:
-    return [code for code in diagnosis.sap_transactions if code.upper() in BLOCKED_TRANSACTIONS]
+    return [code for code in diagnosis.sap_transactions if code.strip().upper() in BLOCKED_TRANSACTIONS]
 
 
 def decide_route(
@@ -68,5 +79,5 @@ def decide_route(
     if ungrounded:
         reasons.append(f"Citações descartadas por não terem sido recuperadas: {ungrounded}.")
     if not review.approved:
-        reasons.extend(f"Revisor: {issue}" for issue in review.issues)
+        reasons.extend(f"Revisor: {issue}" for issue in (review.issues or ["Diagnóstico reprovado."]))
     return ("human_review" if reasons else "auto_suggest"), reasons

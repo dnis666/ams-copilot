@@ -62,7 +62,9 @@ class PgVectorStore:
 
         self._jsonb = Jsonb
 
-        self._connection = psycopg.connect(dsn, autocommit=True)
+        self._connection = psycopg.connect(
+            dsn, autocommit=True, connect_timeout=10, options="-c statement_timeout=30000"
+        )
         self._connection.execute("CREATE EXTENSION IF NOT EXISTS vector")
         register_vector(self._connection)
         self._connection.execute(
@@ -81,6 +83,9 @@ class PgVectorStore:
         self._connection.execute(
             "CREATE INDEX IF NOT EXISTS kb_chunks_embedding_idx ON kb_chunks USING hnsw (embedding vector_cosine_ops)"
         )
+
+    def close(self) -> None:
+        self._connection.close()
 
     def upsert(self, chunks: list[Chunk], vectors: np.ndarray) -> None:
         with self._connection.cursor() as cursor:

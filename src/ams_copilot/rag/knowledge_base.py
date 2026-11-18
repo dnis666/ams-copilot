@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+from pydantic import TypeAdapter
+
+from ams_copilot.models import QueryText, TopK
 from ams_copilot.rag.embeddings import Embedder
 from ams_copilot.rag.store import Chunk, SearchHit, VectorStore
 
@@ -81,6 +84,8 @@ class KnowledgeBase:
         min_score: float = 0.0,
         module_boost: float = 0.05,
     ) -> list[SearchHit]:
+        query = TypeAdapter(QueryText).validate_python(query)
+        top_k = TypeAdapter(TopK).validate_python(top_k)
         vector = self.embedder.embed([query])[0]
         best: dict[str, SearchHit] = {}
         for hit in self.store.search(vector, top_k * 3, None):

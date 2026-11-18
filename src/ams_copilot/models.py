@@ -1,8 +1,15 @@
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
+
+Identifier = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=128)]
+Title = Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=500)]
+Description = Annotated[str, StringConstraints(strip_whitespace=True, min_length=3, max_length=20000)]
+QueryText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=20000)]
+TopK = Annotated[int, Field(ge=1, le=20)]
+ReportDays = Annotated[int, Field(ge=1, le=366)]
 
 
 class Module(StrEnum):
@@ -32,10 +39,10 @@ class TicketType(StrEnum):
 
 
 class Ticket(BaseModel):
-    id: str
-    tenant: str
-    title: str
-    description: str
+    id: Identifier
+    tenant: Identifier
+    title: Title
+    description: Description
     reporter: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 

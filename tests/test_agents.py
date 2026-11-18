@@ -112,6 +112,8 @@ def test_agent_fails_after_max_steps():
 def test_openai_compatible_client_parses_tool_calls():
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
+        assert body["max_tokens"] == 2048
+        assert request.url.path == "/v1/chat/completions"
         assert body["tools"][0]["function"]["name"] == "search_knowledge_base"
         return httpx.Response(
             200,

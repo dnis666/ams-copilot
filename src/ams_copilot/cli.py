@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+from contextlib import closing
 from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
@@ -14,42 +15,42 @@ from ams_copilot.rag import load_documents
 
 def _index(_: argparse.Namespace) -> int:
     settings = get_settings()
-    container = build_container(settings)
-    total = container.knowledge_base.index(load_documents(settings.knowledge_base_dir))
-    print(f"{total} trechos indexados a partir de {settings.knowledge_base_dir}")
-    return 0
+    with closing(build_container(settings)) as container:
+        total = container.knowledge_base.index(load_documents(settings.knowledge_base_dir))
+        print(f"{total} trechos indexados a partir de {settings.knowledge_base_dir}")
+        return 0
 
 
 def _triage(args: argparse.Namespace) -> int:
-    container = build_container(get_settings())
-    ticket = Ticket(
-        id=f"CLI-{uuid4().hex[:8].upper()}",
-        tenant=args.tenant,
-        title=args.title,
-        description=args.description,
-    )
-    print(container.pipeline.run(ticket).model_dump_json(indent=2))
-    return 0
+    with closing(build_container(get_settings())) as container:
+        ticket = Ticket(
+            id=f"CLI-{uuid4().hex[:8].upper()}",
+            tenant=args.tenant,
+            title=args.title,
+            description=args.description,
+        )
+        print(container.pipeline.run(ticket).model_dump_json(indent=2))
+        return 0
 
 
 def _evaluate(args: argparse.Namespace) -> int:
-    container = build_container(get_settings())
-    report = evaluate(container.pipeline, load_cases(Path(args.dataset)))
-    summary = {key: value for key, value in asdict(report).items() if key != "failures"}
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
-    if args.output:
-        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.output).write_text(json.dumps(asdict(report), indent=2, ensure_ascii=False), encoding="utf-8")
-    for failure in report.failures:
-        print(
-            f"falha {failure['case_id']}: módulo {failure['predicted_module']} (esperado {failure['expected_module']}), "
-            f"docs {failure['retrieved_docs']} (esperado {failure['expected_doc']})",
-            file=sys.stderr,
-        )
-    problems = report.gates(args.min_module_accuracy, args.min_retrieval_hit_rate)
-    for problem in problems:
-        print(f"gate reprovado: {problem}", file=sys.stderr)
-    return 1 if problems else 0
+    with closing(build_container(get_settings())) as container:
+        report = evaluate(container.pipeline, load_cases(Path(args.dataset)))
+        summary = {key: value for key, value in asdict(report).items() if key != "failures"}
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+        if args.output:
+            Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.output).write_text(json.dumps(asdict(report), indent=2, ensure_ascii=False), encoding="utf-8")
+        for failure in report.failures:
+            print(
+                f"falha {failure['case_id']}: módulo {failure['predicted_module']} (esperado {failure['expected_module']}), "
+                f"docs {failure['retrieved_docs']} (esperado {failure['expected_doc']})",
+                file=sys.stderr,
+            )
+        problems = report.gates(args.min_module_accuracy, args.min_retrieval_hit_rate)
+        for problem in problems:
+            print(f"gate reprovado: {problem}", file=sys.stderr)
+        return 1 if problems else 0
 
 
 def _serve(args: argparse.Namespace) -> int:
@@ -86,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
     evaluation.set_defaults(handler=_evaluate)
 
     serve = commands.add_parser("serve", help="sobe a API HTTP")
-    serve.add_argument("--host", default="0.0.0.0")
+    serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", type=int, default=8000)
     serve.set_defaults(handler=_serve)
 

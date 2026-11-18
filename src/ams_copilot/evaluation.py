@@ -90,11 +90,12 @@ def evaluate(pipeline: TriagePipeline, cases: list[dict[str, Any]]) -> Evaluatio
 def summarize(results: list[CaseResult]) -> EvaluationReport:
     total = len(results) or 1
     with_doc = [result for result in results if result.expected_doc]
-    with_citations = [result for result in results if result.cited_docs]
+    citation_count = sum(len(result.cited_docs) for result in results)
     failures = [
         asdict(result)
         for result in results
         if result.predicted_module != result.expected_module
+        or result.predicted_priority != result.expected_priority
         or (result.expected_doc and result.expected_doc not in result.retrieved_docs)
     ]
     return EvaluationReport(
@@ -103,8 +104,7 @@ def summarize(results: list[CaseResult]) -> EvaluationReport:
         priority_accuracy=round(sum(r.predicted_priority == r.expected_priority for r in results) / total, 3),
         retrieval_hit_rate=round(sum(r.expected_doc in r.retrieved_docs for r in with_doc) / (len(with_doc) or 1), 3),
         citation_precision=round(
-            sum(r.expected_doc in r.cited_docs for r in with_citations if r.expected_doc)
-            / (len([r for r in with_citations if r.expected_doc]) or 1),
+            sum(doc == result.expected_doc for result in results for doc in result.cited_docs) / (citation_count or 1),
             3,
         ),
         auto_suggest_rate=round(sum(r.route == "auto_suggest" for r in results) / total, 3),
